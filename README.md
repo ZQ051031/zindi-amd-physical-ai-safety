@@ -1,6 +1,6 @@
 # AMD Global Physical AI Behavioral Safety Challenge
 
-A CPU pipeline for forecasting a person's future movement and estimating collision and clearance risk under alternative robot commands. It runs end to end offline on generated data. The official RGB-D inputs and sample submission could not be downloaded anonymously, so this repo does **not** include a verified Zindi upload or an official validation score.
+A CPU pipeline for forecasting a person's future movement and estimating collision and clearance risk under alternative robot commands. It can run on the official Phase One Habitat data or on a small offline synthetic demo. The official run produces a local backtest and a template-aligned submission file; nothing was uploaded to Zindi.
 
 ## Challenge format and rules
 
@@ -10,7 +10,7 @@ A CPU pipeline for forecasting a person's future movement and estimating collisi
 - The submission is one row for each of **2,160 test IDs**, in `SampleSubmission.csv` order, with nine finite probabilities in `[0, 1]`: cumulative event risk by 1, 2 and 3 seconds under **forward** (reference speed), **slow** (35% of reference speed) and **stop**. An event is contact with a person or object, or protective clearance below 0.20 m. Real targets are event fractions over 64 simulated futures.
 - The score is `1 - mean(sqrt(mean((prediction - label)^2, axis=episodes)))`. The nine columns have equal weight. The leaderboard split is 648 public / 1,512 private (30/70); the local backtest is separate.
 - The public schedule lists submissions closing **14 February 2027 at 23:29** as displayed by Zindi, with submission selection closing the same day at 23:59. The prizes prose still refers to 31 January; confirm the cutoff on Zindi before relying on either date. The Phase Two prizes are $5,000 / $3,000 / $2,000, subject to AMD program membership, ROCm certification, AMD hardware/software use and other eligibility rules.
-- The public Data tab describes the semantic targets but does not print the literal CSV headers. The linked sample and other file endpoints returned HTTP 401 without credentials. The local names are therefore **not** presented as official: `ID,forward_1s,forward_2s,forward_3s,slow_1s,slow_2s,slow_3s,stop_1s,stop_2s,stop_3s`. Supply the downloaded template and map its actual headers for official-format output.
+- The official headers are `ID` and `risk_{forward,slow,stop}_{1,2,3}s` (action first, then horizon). The [Phase One schema](configs/phase1-schema.json) maps these to the local target names.
 - Phase One rules specify provided Train data and independent training episodes from the provided simulator. Test may be used only for frozen inference, not fitting, calibration, adaptation, or reconstructing hidden labels. Open-source tools only; openly available pretrained models are permitted; no AutoML. If you enter and share code, follow Zindi's requirement to make it available through the platform. No account, enrollment, paid tooling, or upload is needed for this demo.
 
 ## Offline quick start
@@ -21,7 +21,7 @@ From the repository root with Python 3.10 or later:
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest -q tests
 
 python -m safety_forecast simulate --output data/synthetic
 python -m safety_forecast train --train data/synthetic/Train.csv \
@@ -37,10 +37,64 @@ The motion model fits a multi-output Extra Trees regressor to corrections to a c
 
 Validation reserves later complete source groups by timestamps and purges any earlier groups that overlap the cutoff. Within the earlier split, group-out-of-fold forecasts feed the risk learner. The saved metrics JSON has the score and nine RMSEs for each model, plus root average displacement error (ADE) when future poses exist. The saved inference model is refit on all labeled training data by default; use `--holdout-model` to freeze only the backtest model. Load only trusted Joblib files.
 
-## Swap in authorized competition data
+## Reproduce the official Phase One run
+
+Sign in and obtain `Train.csv`, `TrainMetadata.csv`, `Phase1TrainGenerator.zip`, `Test.csv`, `TestInputs.zip`, and `SampleSubmission.csv` from the [Data tab](https://zindi.africa/competitions/amd-global-physical-ai-safety-challenge/data). Save them in `data/official/`. The two released Train CSVs contain labels and metadata, **not** the RGB-D observations. Regenerate the observations with the official seed and simulator kit:
+
+```sh
+unzip data/official/Phase1TrainGenerator.zip -d data/official/kit
+unzip data/official/TestInputs.zip -d data/official
+```
+
+Follow `data/official/kit/simulator/README.md` to install Habitat-Sim/Lab 0.3.3 in a separate Python 3.9 environment and download and verify the pinned assets into `data/official/sample_workspace`. From the repository root, set `SIM_PYTHON` to that environment's Python executable. This run used Mesa llvmpipe with software EGL; the wrapper selects the non-CUDA EGL device without changing the simulator's motion or label code. With a supported NVIDIA device, use the kit's own `simulator/generate.py` with the same options instead.
+
+```sh
+export HABITAT_SIM_LOG=quiet MAGNUM_LOG=quiet
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 LP_NUM_THREADS=1
+
+# Run workers 0, 1 and 2 concurrently in separate shells, with WORKER set in each.
+case "$WORKER" in
+  0) LIMIT=48 ;;
+  1) LIMIT=42 ;;
+  2) LIMIT=54 ;;
+esac
+"$SIM_PYTHON" -m safety_forecast.generate_habitat_cpu data/official/kit \
+  --workspace data/official/sample_workspace --seed 20261107-train-v1 \
+  --per-cell 1 --futures 64 --workers 3 --worker "$WORKER" --limit "$LIMIT"
+
+# Only after all three workers exit successfully:
+"$SIM_PYTHON" data/official/kit/simulator/finalize.py \
+  --workspace data/official/sample_workspace --workers 3 --expected 144
+
+# Run with the repository environment from the quick start, not Habitat's Python.
+python -m safety_forecast.phase1 train --kit data/official/kit \
+  --generated data/official/sample_workspace/generated/Train.csv \
+  --train data/official/Train.csv --metadata data/official/TrainMetadata.csv \
+  --schema configs/phase1-schema.json --model runs/official/model.joblib \
+  --metrics submissions/phase1-metrics.json
+python -m safety_forecast.phase1 predict \
+  --test data/official/Test.csv --template data/official/SampleSubmission.csv \
+  --schema configs/phase1-schema.json --model runs/official/model.joblib \
+  --output submissions/submission.csv
+```
+
+The run uses a **144-episode subset** of the 864 released Train episodes: 72 each from the kit's small and medium buildings, with all three avatars and 12 encounter families represented in both. The large building was too slow to regenerate in full on software EGL, so no episodes from that building were used for fitting or local validation. The official Test set still includes all three buildings. The adapter requires the regenerated labels to agree with the released labels by ID. There is one independent episode per ID; chronological order is not available, so the backtest is a seeded, family-stratified holdout (115 train, 29 validation), not an ID-based chronological split.
+
+The motion pipeline estimates a rough single-person track by reprojection and depth differencing within the nine observed frames. It converts the Habitat Y-up telemetry and camera data to the model's Z-up frame and approximates each robot path with one pending command tick followed by the chosen action at a fixed heading. It does not simulate navigation constraints or use future poses, so the motion model extrapolates constant velocity. Still or occluded people can defeat the depth tracker.
+
+| Model | Local competition score (higher is better) |
+| --- | ---: |
+| Motion + risk pipeline (used for submission) | 0.750131 |
+| Geometry-only constant-velocity baseline | 0.732522 |
+| Official kit RGB-D CPU baseline | 0.792215 |
+| Training label mean | 0.741553 |
+
+The kit baseline scored better on this holdout. All scores use the competition metric on the same 29 released Train labels; see [per-target RMSEs](submissions/phase1-metrics.json). The submitted-format file uses the repository's motion + risk pipeline, refit on all 144 regenerated pairs. Test observations were only read during frozen prediction. [`submissions/submission.csv`](submissions/submission.csv) matches the official template's headers, all 2,160 IDs in order, and finite probabilities in `[0, 1]`. These are local simulation results, not Zindi leaderboard scores or a physical safety guarantee. No submission was uploaded.
+
+## Use custom tracks with authorized competition data
 
 1. Obtain `Phase1TrainGenerator.zip`, `Test.csv`, `TestInputs.zip`, and `SampleSubmission.csv` from the Data tab. Follow the kit's `DataDescription.md`, `THIRD_PARTY_NOTICES.md` and `simulator/README.md`. Use the generator's own labeled `Train.csv` beside its generated inputs. Extract `TestInputs.zip` beside `Test.csv` and retain the `TestInputs/` directory.
-2. Export tracked keypoints for the same person from the nine **observed** RGB-D frames for Train and Test, with pelvis/root first, using a fixed, openly available detector/tracker of your choice. This repository does not run a detector. Save `<ID>.npy` per episode with shape `(9, J, 3)` for metre coordinates in the same episode frame as the robot (Z up), or `(9, J, 2)` for pixel `(u, v)` coordinates in the aligned RGB/depth images. The latter is lifted by the adapter using positive optical-axis depth, 3×3 intrinsics and 4×4 episode-from-OpenCV-camera transforms. Handle occlusions and invalid or missing tracks using one fixed preprocessing policy developed on Train. If depth or extrinsics use a different convention, normalize them or export 3D tracks instead.
+2. Export tracked keypoints for the same person from the nine **observed** RGB-D frames for Train and Test, with pelvis/root first, using a fixed, openly available detector/tracker of your choice. Save `<ID>.npy` per episode with shape `(9, J, 3)` for metre coordinates in the same episode frame as the robot (Z up), or `(9, J, 2)` for pixel `(u, v)` coordinates in the aligned RGB/depth images. The latter is lifted by the adapter using positive optical-axis depth, 3×3 intrinsics and 4×4 episode-from-OpenCV-camera transforms. Handle occlusions and invalid or missing tracks using one fixed preprocessing policy developed on Train. If depth or extrinsics use a different convention, normalize them or export 3D tracks instead.
 3. Create `schema.json` as `{"id": "<actual ID header>", "targets": {...}}`. The `targets` object maps each local target name above (such as `forward_1s`) to its corresponding literal header in the sample/Train file. The writer retains the template's exact header and ID order; it rejects unknown/missing IDs and invalid probabilities. Create a timing CSV containing the same actual ID header, `source_id` (shared by related windows) and `episode_time` (numeric generation/capture time or ISO timestamp). Record real generation order when capture timestamps are unavailable; do not sort by the ID string and assume chronology.
 4. Create `telemetry.json` mapping normalized field names to selectors based on the kit's documented arrays. For instance, a selector `{"array":"telemetry","columns":[0,1]}` takes two columns across all frames; `{"array":"telemetry","rows":-1,"columns":2}` takes one scalar at the last frame. Optional `scale` multiplies the selection. These selector examples are illustrative, not assertions of the official NPZ layout. Map:
    - `robot_xy`: (9, 2) episode-frame metre positions; `heading`: (9,) radians from episode +X toward +Y.

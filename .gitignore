@@ -3,6 +3,6 @@ __pycache__/
 .venv/
 data/
 runs/
-submission.csv
+/submission.csv
 *.joblib
 *.npz

@@ -1,0 +1,14 @@
+{
+  "id": "ID",
+  "targets": {
+    "forward_1s": "risk_forward_1s",
+    "forward_2s": "risk_forward_2s",
+    "forward_3s": "risk_forward_3s",
+    "slow_1s": "risk_slow_1s",
+    "slow_2s": "risk_slow_2s",
+    "slow_3s": "risk_slow_3s",
+    "stop_1s": "risk_stop_1s",
+    "stop_2s": "risk_stop_2s",
+    "stop_3s": "risk_stop_3s"
+  }
+}

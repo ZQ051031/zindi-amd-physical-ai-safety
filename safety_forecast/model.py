@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
 from sklearn.model_selection import GroupKFold
 
-from .data import DT, FUTURE, HISTORY, HORIZONS, TARGETS
+from .data import DT, FUTURE, HISTORY, HORIZONS, SPEED_MULTIPLIERS, TARGETS
 from .simulate import T_FUTURE, T_PAST, robot_paths, rotation
 
 KNOTS = np.arange(4, FUTURE, 5)
@@ -36,7 +36,17 @@ def episode_features(record):
     future = record.get("future_root_xy")
     if future is not None:
         future = (future - origin) @ rot
-    return motion, context, cv, robot_paths(speed, yaw), future
+    if "pending_speed" in record:
+        pending = record["pending_speed"]
+        heading_change = yaw * DT
+        step = pending * DT * rotation(heading_change / 2)[:, 0]
+        direction = rotation(heading_change)[:, 0]
+        distance = SPEED_MULTIPLIERS[:, None] * speed * (T_FUTURE - DT)
+        robot = step + distance[..., None] * direction
+        context = np.r_[context, pending]
+    else:
+        robot = robot_paths(speed, yaw)
+    return motion, context, cv, robot, future
 
 
 def geometry(human, robot):
