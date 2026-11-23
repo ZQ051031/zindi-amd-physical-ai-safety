@@ -1,10 +1,10 @@
 {
   "train_rows": 115,
   "validation_rows": 29,
-  "refit_rows": 144,
+  "submission_fit_rows": 115,
   "release_labels_verified": 144,
   "validation_split": "episode holdout, stratified by family, seed 41",
-  "submission_model": "forecast_model",
+  "submission_model": "kit_baseline",
   "models": {
     "forecast_model": {
       "score": 0.7501308391071855,

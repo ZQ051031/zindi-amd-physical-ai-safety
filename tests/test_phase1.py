@@ -63,19 +63,31 @@ def test_official_pairing_requires_released_labels_in_generated_order(tmp_path):
         phase1.paired_training(generated, train, metadata, read_schema(SCHEMA))
 
 
-def test_official_inference_calls_frozen_model_and_writes_sample_order(tmp_path, monkeypatch):
+@pytest.mark.parametrize("use_kit", [False, True])
+def test_official_inference_calls_frozen_model_and_writes_sample_order(tmp_path, monkeypatch, use_kit):
     ids = [f"{i:04d}" for i in range(2160)]
     test, sample, output = (tmp_path / name for name in ("Test.csv", "Sample.csv", "out.csv"))
     pd.DataFrame({"ID": ids, "sequence_path": [f"{i}.npz" for i in ids]}).to_csv(test, index=False)
     pd.DataFrame({"ID": ids[::-1], **dict.fromkeys(OFFICIAL, 0)}).to_csv(sample, index=False)
 
     def predict(paths):
+        assert isinstance(paths, np.ndarray) == use_kit
         return np.repeat(np.asarray(paths)[:, None] / 2159, len(OFFICIAL), axis=1)
 
-    monkeypatch.setattr(phase1, "packet_features", lambda path: int(path.stem))
+    def motion_features(path):
+        assert not use_kit
+        return int(path.stem)
+
+    def starter(path):
+        assert use_kit and path == tmp_path
+        return {"features": lambda packet: int(packet.stem)}
+
+    monkeypatch.setattr(phase1, "packet_features", motion_features)
+    monkeypatch.setattr(phase1, "kit_starter", starter)
     monkeypatch.setattr(phase1.joblib, "load", lambda _: SimpleNamespace(predict=predict))
     phase1.predict(SimpleNamespace(test=test, schema=SCHEMA, template=sample, output=output,
-                                    model=tmp_path / "model.joblib", threads=1))
+                                    model=tmp_path / "model.joblib", threads=1,
+                                    kit=tmp_path if use_kit else None))
     written = pd.read_csv(output, dtype={"ID": str})
     assert written.columns.tolist() == ["ID", *OFFICIAL]
     assert written.ID.tolist() == ids[::-1]

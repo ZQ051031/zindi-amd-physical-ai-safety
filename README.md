@@ -70,11 +70,12 @@ esac
 python -m safety_forecast.phase1 train --kit data/official/kit \
   --generated data/official/sample_workspace/generated/Train.csv \
   --train data/official/Train.csv --metadata data/official/TrainMetadata.csv \
-  --schema configs/phase1-schema.json --model runs/official/model.joblib \
+  --schema configs/phase1-schema.json --model runs/official/kit-baseline.joblib \
+  --submission-model kit_baseline \
   --metrics submissions/phase1-metrics.json
-python -m safety_forecast.phase1 predict \
+python -m safety_forecast.phase1 predict --kit data/official/kit \
   --test data/official/Test.csv --template data/official/SampleSubmission.csv \
-  --schema configs/phase1-schema.json --model runs/official/model.joblib \
+  --schema configs/phase1-schema.json --model runs/official/kit-baseline.joblib \
   --output submissions/submission.csv
 ```
 
@@ -84,12 +85,12 @@ The motion pipeline estimates a rough single-person track by reprojection and de
 
 | Model | Local competition score (higher is better) |
 | --- | ---: |
-| Motion + risk pipeline (used for submission) | 0.750131 |
+| Motion + risk pipeline | 0.750131 |
 | Geometry-only constant-velocity baseline | 0.732522 |
-| Official kit RGB-D CPU baseline | 0.792215 |
+| Official kit RGB-D CPU baseline (used for the CSV) | 0.792215 |
 | Training label mean | 0.741553 |
 
-The kit baseline scored better on this holdout. All scores use the competition metric on the same 29 released Train labels; see [per-target RMSEs](submissions/phase1-metrics.json). The submitted-format file uses the repository's motion + risk pipeline, refit on all 144 regenerated pairs. Test observations were only read during frozen prediction. [`submissions/submission.csv`](submissions/submission.csv) matches the official template's headers, all 2,160 IDs in order, and finite probabilities in `[0, 1]`. These are local simulation results, not Zindi leaderboard scores or a physical safety guarantee. No submission was uploaded.
+The kit baseline beat the motion + risk pipeline by **0.042084** on the same 29-episode holdout. All scores use the competition metric; see [per-target RMSEs](submissions/phase1-metrics.json). The CSV uses the exact evaluated kit estimator, fitted on the other 115 episodes and saved without refitting on the holdout. The kit's feature extractor and model are unchanged. Test observations were only read for frozen inference. [`submissions/submission.csv`](submissions/submission.csv) matches the official template's headers, all 2,160 IDs in order, and finite probabilities in `[0, 1]`. These are local simulation results, not Zindi leaderboard scores or a physical safety guarantee. No submission was uploaded.
 
 ## Use custom tracks with authorized competition data
 

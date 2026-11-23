@@ -97,13 +97,17 @@ def measures(y, p):
     return {"score": value, "rmse": dict(zip(TARGETS, rmse.tolist()))}
 
 
+def kit_starter(path):
+    return runpy.run_path(str(path / "starter_baseline.py"))
+
+
 def train(args):
     schema = read_schema(args.schema)
     generated, labels, families = paired_training(args.generated, args.train, args.metadata, schema)
     fit, valid = train_test_split(
         np.arange(len(labels)), test_size=0.2, random_state=41, stratify=families,
     )
-    starter = runpy.run_path(str(args.kit / "starter_baseline.py"))
+    starter = kit_starter(args.kit)
     paths = [args.generated.parent / path for path in generated["sequence_path"]]
     motion = [packet_features(path) for path in paths]
     observed = np.stack([starter["features"](path) for path in paths])
@@ -118,12 +122,15 @@ def train(args):
             "kit_baseline": measures(labels[valid], kit.predict(observed[valid])),
             "train_prior": measures(labels[valid], np.broadcast_to(labels[fit].mean(0), labels[valid].shape)),
         }
-        frozen = ForecastPipeline().fit(motion, labels, ids)
+        if args.submission_model == "kit_baseline":
+            frozen, fit_rows = kit, len(fit)
+        else:
+            frozen, fit_rows = ForecastPipeline().fit(motion, labels, ids), len(labels)
     result = {
         "train_rows": len(fit), "validation_rows": len(valid),
-        "refit_rows": len(labels), "release_labels_verified": len(labels),
+        "submission_fit_rows": fit_rows, "release_labels_verified": len(labels),
         "validation_split": "episode holdout, stratified by family, seed 41",
-        "submission_model": "forecast_model", "models": models,
+        "submission_model": args.submission_model, "models": models,
     }
     args.model.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(frozen, args.model, compress=3)
@@ -131,7 +138,7 @@ def train(args):
     args.metrics.write_text(json.dumps(result, indent=2) + "\n")
     for name, entry in models.items():
         print(f"{name}: score={entry['score']:.6f}")
-    print(f"Refit forecast_model on {len(labels)} episodes")
+    print(f"Saved frozen {args.submission_model} fitted on {fit_rows} episodes")
 
 
 def predict(args):
@@ -143,7 +150,12 @@ def predict(args):
     paths = [args.test.parent / path for path in test["sequence_path"]]
     model = joblib.load(args.model)
     with threadpool_limits(limits=args.threads):
-        predictions = model.predict([packet_features(path) for path in paths])
+        if args.kit is None:
+            features = [packet_features(path) for path in paths]
+        else:
+            extract = kit_starter(args.kit)["features"]
+            features = np.stack([extract(path) for path in paths])
+        predictions = model.predict(features)
     submitted = submission(args.template, test[id_col], predictions, args.output, id_col, columns)
     print(f"Wrote {len(submitted)} rows to {args.output}")
 
@@ -160,6 +172,13 @@ def main():
         command.add_argument("--threads", type=int, default=1)
         for path in ("schema", "model", *paths):
             command.add_argument(f"--{path}", type=Path, required=True)
+        if name == "train":
+            command.add_argument("--submission-model", choices=("forecast_model", "kit_baseline"),
+                                 default="forecast_model",
+                                 help="save the repository refit or the evaluated kit estimator")
+        else:
+            command.add_argument("--kit", type=Path,
+                                 help="use the kit feature extractor with a frozen kit estimator")
     args = parser.parse_args()
     args.handler(args)
 
